@@ -42,6 +42,7 @@ export default async function handler(
       carrierUrl: null,
       track17Configured: false,
       ghtkConfigured: false,
+      lastScannedConfigured: false,
       result: null,
     });
     return;
@@ -69,6 +70,7 @@ export default async function handler(
       carrierUrl: null,
       track17Configured: apiConfig.track17ApiKey != null,
       ghtkConfigured: apiConfig.ghtkApiToken != null,
+      lastScannedConfigured: apiConfig.lastScannedApiKey != null,
       result: null,
     });
   }

@@ -523,6 +523,23 @@ export function App() {
                       : "chưa cấu hình token API trên máy chủ, mã GHTK chưa tra tự động được."}
                   </span>
                 </li>
+                <li className="flex items-start gap-2">
+                  <span
+                    className="mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full"
+                    style={{
+                      backgroundColor: apiConfig.lastScannedConfigured
+                        ? "var(--ok)"
+                        : "var(--warn)",
+                    }}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <strong>LastScanned</strong> —{" "}
+                    {apiConfig.lastScannedConfigured
+                      ? "đã cấu hình API key, tra được mã SPX khi 17TRACK chưa có kết quả."
+                      : "chưa cấu hình API key trên máy chủ, mã SPX chỉ tra được khi đã có key 17TRACK."}
+                  </span>
+                </li>
               </ul>
             </div>
           )}

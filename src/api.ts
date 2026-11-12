@@ -34,6 +34,7 @@ export type TrackResponse = {
   carrierUrl: string | null;
   track17Configured: boolean;
   ghtkConfigured: boolean;
+  lastScannedConfigured: boolean;
   result: TrackingResult | null;
 };
 
@@ -114,11 +115,13 @@ export const api = {
   async getApiConfigStatus(_args: Record<string, never>): Promise<{
     track17Configured: boolean;
     ghtkConfigured: boolean;
+    lastScannedConfigured: boolean;
   }> {
     const res = await fetch("/api/config-status");
     return (await res.json()) as {
       track17Configured: boolean;
       ghtkConfigured: boolean;
+      lastScannedConfigured: boolean;
     };
   },
 

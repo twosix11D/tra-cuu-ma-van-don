@@ -12,5 +12,6 @@ export default function handler(
   res.status(200).json({
     track17Configured: config.track17ApiKey != null,
     ghtkConfigured: config.ghtkApiToken != null,
+    lastScannedConfigured: config.lastScannedApiKey != null,
   });
 }
