@@ -12,11 +12,17 @@
 // 3. Fallback: per-carrier direct adapters over each carrier's public
 //    tracking page (SPX with a remembered 60-minute anti-bot cooldown,
 //    GHN phone verification, VNPost captcha, bot walls elsewhere — all
-//    reported honestly, never circumvented).
+//    reported honestly, never circumvented). SPX only: when
+//    LASTSCANNED_API_KEY is set, SPX codes are first tried through the
+//    LastScanned tracking API (from the Termux app Long sent,
+//    spx-tracking-pro); without a key that adapter is skipped, because
+//    LastScanned refuses keyless lookups from cloud/hosting networks
+//    (HTTP 402, verified 2026-11-13).
 //
 // Credentials are read from the server process environment ONLY
-// (TRACK17_API_KEY, GHTK_API_TOKEN, GHTK_CLIENT_SOURCE — set them in the
-// Vercel project's Environment Variables). They never reach the browser:
+// (TRACK17_API_KEY, GHTK_API_TOKEN, GHTK_CLIENT_SOURCE,
+// LASTSCANNED_API_KEY — set them in the Vercel project's Environment
+// Variables). They never reach the browser:
 // the API routes expose only booleans about whether each key is set.
 // When a key is missing, lookups that need it return an explicit
 // `not_configured` state in Vietnamese instead of fake data.
@@ -79,6 +85,7 @@ export type ApiConfig = {
   track17ApiKey: string | null;
   ghtkApiToken: string | null;
   ghtkClientSource: string | null;
+  lastScannedApiKey: string | null;
 };
 
 
@@ -91,6 +98,7 @@ export function getApiConfig(): ApiConfig {
     track17ApiKey: read("TRACK17_API_KEY"),
     ghtkApiToken: read("GHTK_API_TOKEN"),
     ghtkClientSource: read("GHTK_CLIENT_SOURCE"),
+    lastScannedApiKey: read("LASTSCANNED_API_KEY"),
   };
 }
 
@@ -390,13 +398,21 @@ type AdapterResult =
   | { kind: "not_found" }
   | { kind: "blocked"; reason: string; specific?: boolean };
 
+type AdapterContext = {
+  /** LastScanned API key for the SPX adapter (null = adapter skipped). */
+  lastScannedApiKey: string | null;
+};
+
 type CarrierDef = {
   id: string;
   name: string;
   /** Official public tracking page (verified by a live fetch). */
   url: string | null;
   detect: (number: string) => boolean;
-  fetchTracking: (number: string) => Promise<AdapterResult>;
+  fetchTracking: (
+    number: string,
+    ctx?: AdapterContext,
+  ) => Promise<AdapterResult>;
 };
 
 function blockedReason(name: string): string {
@@ -492,6 +508,118 @@ async function fetchSpx(number: string): Promise<AdapterResult> {
     return { kind: "ok", statusText, events, estimatedDelivery: null };
   }
   return { kind: "blocked", reason: blockedReason("SPX") };
+}
+
+// --- SPX via LastScanned (third-party tracking API) -----------------------
+// The Termux app Long sent (spx-tracking-pro) tracks SPX through
+// LastScanned: GET https://api.lastscanned.com/v1/track/{number}?carrier=spxvn
+// with an optional `Authorization: Bearer <key>` header.
+// Verified 2026-11-13: keyless lookups are REFUSED from cloud/hosting
+// networks (HTTP 402 "Keyless free lookups aren't given to requests from
+// cloud or hosting networks") — so on Vercel this adapter only runs when
+// LASTSCANNED_API_KEY is set (free account: 5 lookups/day; Pro $4.99/mo:
+// 1,000 numbers). Without a key it is skipped entirely and the direct SPX
+// adapter runs as before. It is tried BEFORE the direct SPX page because
+// Shopee's endpoint blocks datacenter IPs with its anti-bot check.
+// Response shape (per the Termux app's normalize()): { trackingNumber,
+// status, statusDescription, deliveredAtLocal|deliveredAt, events: [{
+// localTime|timestamp, status, description|statusDescription, location }] }.
+async function fetchLastScannedSpx(
+  number: string,
+  apiKey: string,
+): Promise<AdapterResult> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    Authorization: `Bearer ${apiKey}`,
+  };
+  const outcome = await fetchCarrier(
+    `https://api.lastscanned.com/v1/track/${encodeURIComponent(number)}?carrier=spxvn`,
+    { headers },
+  );
+  if (outcome.kind === "network") {
+    return {
+      kind: "blocked",
+      reason:
+        "Không kết nối được tới LastScanned lúc này. Thử lại sau ít phút.",
+    };
+  }
+  if (outcome.kind !== "json") {
+    return { kind: "not_found" };
+  }
+  if (outcome.status === 401 || outcome.status === 403) {
+    return {
+      kind: "blocked",
+      specific: true,
+      reason:
+        "LastScanned từ chối key API trên máy chủ (key sai, hết hạn hoặc thiếu quyền). Người quản trị kiểm tra lại biến LASTSCANNED_API_KEY trong cấu hình máy chủ.",
+    };
+  }
+  if (outcome.status === 402) {
+    return {
+      kind: "blocked",
+      specific: true,
+      reason:
+        "LastScanned yêu cầu thanh toán hoặc key có trả phí cho lượt tra này (gói miễn phí đã hết lượt trong ngày). Người quản trị kiểm tra lại gói LastScanned hoặc dùng key 17TRACK.",
+    };
+  }
+  if (outcome.status === 429) {
+    return {
+      kind: "blocked",
+      specific: true,
+      reason:
+        "Đã chạm giới hạn lượt tra cứu của LastScanned trong ngày. Thử lại sau hoặc dùng key 17TRACK.",
+    };
+  }
+  const root = asRecord(outcome.json);
+  if (!root || outcome.status >= 400) {
+    return { kind: "not_found" };
+  }
+  const rawEvents = Array.isArray(root.events) ? root.events : [];
+  const events: TrackingEvent[] = rawEvents
+    .map((e) => {
+      const rec = asRecord(e);
+      if (!rec) return null;
+      const description =
+        asString(rec.description) ??
+        asString(rec.statusDescription) ??
+        asString(rec.status);
+      if (!description) return null;
+      return {
+        time: normalizeTime(rec.localTime ?? rec.timestamp),
+        description,
+        location: asString(rec.location),
+      };
+    })
+    .filter((e): e is TrackingEvent => e !== null);
+  const statusText =
+    asString(root.statusDescription) ?? asString(root.status);
+  if (events.length === 0 && !statusText) return { kind: "not_found" };
+  return {
+    kind: "ok",
+    statusText,
+    events,
+    estimatedDelivery: normalizeTime(
+      root.deliveredAtLocal ?? root.deliveredAt,
+    ),
+  };
+}
+
+// SPX via LastScanned first (only when a key is configured — keyless is
+// refused from cloud IPs), then the direct SPX page as before.
+async function fetchSpxWithLastScanned(
+  number: string,
+  ctx?: AdapterContext,
+): Promise<AdapterResult> {
+  const key = ctx?.lastScannedApiKey ?? null;
+  if (key) {
+    const viaLastScanned = await fetchLastScannedSpx(number, key);
+    if (viaLastScanned.kind === "ok") return viaLastScanned;
+    if (viaLastScanned.kind === "blocked" && viaLastScanned.specific) {
+      return viaLastScanned;
+    }
+    // not_found / generic failure: fall through to the direct SPX page.
+  }
+  return fetchSpx(number);
 }
 
 // --- GHN: public gateway, but phone verification gates the journey. ----
@@ -679,7 +807,7 @@ const CARRIERS: CarrierDef[] = [
     name: "SPX — Shopee Express",
     url: "https://spx.vn/track",
     detect: (n) => /^SPXVN[0-9A-Z]+$/i.test(n),
-    fetchTracking: fetchSpx,
+    fetchTracking: fetchSpxWithLastScanned,
   },
   {
     id: "ghtk",
@@ -833,6 +961,7 @@ export type LookupOutcome =
 async function lookupDirect(
   number: string,
   preferredCarrierName: string | null,
+  ctx?: AdapterContext,
 ): Promise<LookupOutcome> {
   const candidates = candidateCarriers(number, preferredCarrierName);
   if (candidates.length === 0) {
@@ -849,7 +978,7 @@ async function lookupDirect(
   let firstNotFound: CarrierDef | null = null;
 
   for (const carrier of candidates) {
-    const outcome = await carrier.fetchTracking(number);
+    const outcome = await carrier.fetchTracking(number, ctx);
     if (outcome.kind === "ok") {
       const latest = outcome.events[0];
       const status = classifyStatus(outcome.statusText ?? latest?.description ?? null);
@@ -1391,7 +1520,9 @@ export async function lookupTrackingNumber(
     // a carrier page may still know this code.
   }
 
-  const direct = await lookupDirect(number, preferred.carrierName);
+  const direct = await lookupDirect(number, preferred.carrierName, {
+    lastScannedApiKey: config.lastScannedApiKey,
+  });
   if (direct.state === "ok") return direct;
   if (apiPending && direct.state === "not_found") {
     return {
@@ -1437,6 +1568,7 @@ export type TrackResponseBody = {
   carrierUrl: string | null;
   track17Configured: boolean;
   ghtkConfigured: boolean;
+  lastScannedConfigured: boolean;
   result: TrackingResult | null;
 };
 
@@ -1447,6 +1579,7 @@ export function toTrackResponse(
   const flags = {
     track17Configured: config.track17ApiKey != null,
     ghtkConfigured: config.ghtkApiToken != null,
+    lastScannedConfigured: config.lastScannedApiKey != null,
   };
   if (outcome.state === "ok") {
     return {
