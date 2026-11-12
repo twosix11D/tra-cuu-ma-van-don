@@ -2,7 +2,7 @@
 // configured. Booleans only: key values never leave the server.
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getApiConfig } from "./_lib/tracking";
+import { getApiConfig } from "./_lib/tracking.js";
 
 export default function handler(
   _req: VercelRequest,

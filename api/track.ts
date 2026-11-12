@@ -11,7 +11,7 @@ import {
   getApiConfig,
   lookupTrackingNumber,
   toTrackResponse,
-} from "./_lib/tracking";
+} from "./_lib/tracking.js";
 
 // The 17TRACK register-then-read flow can take a few seconds.
 export const config = { maxDuration: 60 };
