@@ -16,10 +16,11 @@ công khai cho mọi người dùng.
   - `POST /api/track` — tra một mã: mã dạng GHTK → API chính thức của GHTK;
     mã khác → 17TRACK Tracking API v2.4 (tự nhận diện hãng, đăng ký mã lần
     đầu qua `/register`); API chưa có kết quả → fallback lấy trực tiếp từ
-    trang tra cứu công khai của hãng (mã SPX thử qua API LastScanned trước
-    khi gọi trực tiếp sang SPX, nhưng chỉ khi đã cấu hình
-    `LASTSCANNED_API_KEY` — gọi không key từ máy chủ cloud bị LastScanned
-    từ chối; SPX có hạ nhiệt 60 phút sau khi bị
+    trang tra cứu công khai của hãng (mã SPX tra được KHÔNG cần key qua
+    endpoint get_order_info của SPX, đã kiểm chứng live; nếu endpoint đó
+    không có kết quả thì thử qua API LastScanned khi đã cấu hình
+    `LASTSCANNED_API_KEY`, rồi mới gọi trực tiếp sang SPX; SPX có hạ nhiệt
+    60 phút sau khi bị
     Shopee chặn chống bot; GHN cần xác thực SĐT, VNPost có captcha, Viettel
     Post/DHL/UPS/FedEx có tường bot, J&T/Ninja Van/BEST không có endpoint
     công khai — tất cả đều báo rõ lý do bằng tiếng Việt kèm link trang hãng,

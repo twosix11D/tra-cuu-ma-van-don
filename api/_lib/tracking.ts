@@ -12,12 +12,14 @@
 // 3. Fallback: per-carrier direct adapters over each carrier's public
 //    tracking page (SPX with a remembered 60-minute anti-bot cooldown,
 //    GHN phone verification, VNPost captcha, bot walls elsewhere — all
-//    reported honestly, never circumvented). SPX only: when
-//    LASTSCANNED_API_KEY is set, SPX codes are first tried through the
+//    reported honestly, never circumvented). SPX only: the primary path is
+//    now the get_order_info endpoint (see fetchSpxOrderInfo), which answers
+//    with the full journey and no key from datacenter IPs; when
+//    LASTSCANNED_API_KEY is set, SPX codes are also tried through the
 //    LastScanned tracking API (from the Termux app Long sent,
-//    spx-tracking-pro); without a key that adapter is skipped, because
-//    LastScanned refuses keyless lookups from cloud/hosting networks
-//    (HTTP 402, verified 2026-11-13).
+//    spx-tracking-pro) if get_order_info has no answer; without a key that
+//    adapter is skipped, because LastScanned refuses keyless lookups from
+//    cloud/hosting networks (HTTP 402, verified 2026-11-13).
 //
 // Credentials are read from the server process environment ONLY
 // (TRACK17_API_KEY, GHTK_API_TOKEN, GHTK_CLIENT_SOURCE,
@@ -420,7 +422,9 @@ function blockedReason(name: string): string {
 }
 
 // --- SPX (Shopee Express): public JSON endpoint, verified live. ---------
-// SPX answers `retcode: 0` with the parcel in `data` (empty object when the
+// This is the FALLBACK SPX path now: the primary path is fetchSpxOrderInfo
+// (get_order_info, no key, works from datacenters). This older endpoint
+// answers `retcode: 0` with the parcel in `data` (empty object when the
 // code is unknown). Shopee's edge also intermittently answers HTTP 403
 // with an anti-bot JSON body ({error: 90309999, redirect_to_error_page:
 // true, ...} and no `data` at all) — that is a block, NOT a "not found",
@@ -604,12 +608,68 @@ async function fetchLastScannedSpx(
   };
 }
 
-// SPX via LastScanned first (only when a key is configured — keyless is
-// refused from cloud IPs), then the direct SPX page as before.
-async function fetchSpxWithLastScanned(
+// --- SPX via get_order_info (primary SPX path) ---------------------------
+// Found in github.com/naminc/spx-tracking-bot (SpxService): the "open
+// order info" endpoint the SPX tracking page uses —
+// GET https://spx.vn/shipment/order/open/order/get_order_info
+//   ?spx_tn={number}&language_code=vi
+// with headers Accept: application/json, Referer: https://spx.vn/track?…,
+// User-Agent: Mozilla/5.0.
+// Unlike the /api/v2 fleet_order endpoint (HTTP 403 anti-bot from
+// datacenter IPs), this one answers `retcode: 0` with the full journey in
+// `data.sls_tracking_info.records[]` — no key, no login — verified live
+// 2026-11-13 from a datacenter IP for both of Long's SPX codes
+// (SPXVN06972458658B: 17 records through to Delivered; SPXVN06199468795B:
+// in transit). Records carry buyer_description/description, actual_time
+// (unix seconds), current_location (location_name/full_address).
+async function fetchSpxOrderInfo(number: string): Promise<AdapterResult> {
+  const outcome = await fetchCarrier(
+    `https://spx.vn/shipment/order/open/order/get_order_info?spx_tn=${encodeURIComponent(number)}&language_code=vi`,
+    {
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "User-Agent": "Mozilla/5.0",
+        Referer: `https://spx.vn/track?${encodeURIComponent(number)}`,
+      },
+    },
+  );
+  if (outcome.kind !== "json") return { kind: "not_found" };
+  const root = asRecord(outcome.json);
+  const info = asRecord(asRecord(root?.data)?.sls_tracking_info);
+  const rawRecords = Array.isArray(info?.records) ? info.records : [];
+  const events: TrackingEvent[] = rawRecords
+    .map((r): TrackingEvent | null => {
+      const rec = asRecord(r);
+      if (!rec) return null;
+      const description =
+        asString(rec.buyer_description) ?? asString(rec.description);
+      const time = normalizeTime(rec.actual_time);
+      if (!description || !time) return null;
+      const loc = asRecord(rec.current_location);
+      const location =
+        asString(loc?.location_name) ?? asString(loc?.full_address) ?? null;
+      return { time, description, location };
+    })
+    .filter((e): e is TrackingEvent => e !== null)
+    .sort((a, b) => (b.time ?? "").localeCompare(a.time ?? ""));
+  if (events.length === 0) return { kind: "not_found" };
+  return {
+    kind: "ok",
+    statusText: events[0]?.description ?? null,
+    events,
+    estimatedDelivery: null,
+  };
+}
+
+// SPX chain: get_order_info first (free, works from datacenters), then
+// LastScanned (only when a key is configured — keyless is refused from
+// cloud IPs), then the direct SPX page as before.
+async function fetchSpxChain(
   number: string,
   ctx?: AdapterContext,
 ): Promise<AdapterResult> {
+  const viaOrderInfo = await fetchSpxOrderInfo(number);
+  if (viaOrderInfo.kind === "ok") return viaOrderInfo;
   const key = ctx?.lastScannedApiKey ?? null;
   if (key) {
     const viaLastScanned = await fetchLastScannedSpx(number, key);
@@ -807,7 +867,7 @@ const CARRIERS: CarrierDef[] = [
     name: "SPX — Shopee Express",
     url: "https://spx.vn/track",
     detect: (n) => /^SPXVN[0-9A-Z]+$/i.test(n),
-    fetchTracking: fetchSpxWithLastScanned,
+    fetchTracking: fetchSpxChain,
   },
   {
     id: "ghtk",
