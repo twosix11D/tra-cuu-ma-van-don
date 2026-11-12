@@ -53,6 +53,11 @@ export default async function handler(
     typeof body.carrierKey === "number" && Number.isFinite(body.carrierKey)
       ? body.carrierKey
       : null;
+  // Optional GHN verification credential for this lookup: the full
+  // recipient/sender phone number, or a 64-hex phone_verify token from
+  // an earlier verified lookup. Only the sha256 hash ever leaves the
+  // server (to GHN); the raw value is never stored or logged.
+  const phone = typeof body.phone === "string" ? body.phone : null;
 
   const apiConfig = getApiConfig();
   try {
@@ -60,6 +65,7 @@ export default async function handler(
       number,
       { carrierName, carrierKey },
       apiConfig,
+      phone,
     );
     res.status(200).json(toTrackResponse(outcome, apiConfig));
   } catch {

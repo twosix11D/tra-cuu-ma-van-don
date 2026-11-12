@@ -270,6 +270,15 @@ export function App() {
   } | null>(null);
   const [selectedNumber, setSelectedNumber] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<TrackingResult | null>(null);
+  // GHN phone-verification prompt: shown when the server says a GHN code
+  // needs the recipient/sender phone number to show its journey.
+  const [phonePrompt, setPhonePrompt] = useState<{
+    number: string;
+    message: string;
+    carrierUrl: string | null;
+  } | null>(null);
+  const [phoneInput, setPhoneInput] = useState("");
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   const detailRef = useRef<HTMLElement | null>(null);
 
   const shipmentsQuery = useQuery({
@@ -287,11 +296,14 @@ export function App() {
   const invalidateShipments = () =>
     queryClient.invalidateQueries({ queryKey: ["shipments"] });
 
-  function applyTrackResponse(res: TrackResponse) {
+  function applyTrackResponse(res: TrackResponse, number?: string) {
     if (res.state === "ok" && res.result) {
       setLastResult(res.result);
       setSelectedNumber(res.result.number);
       setFeedback(null);
+      setPhonePrompt(null);
+      setPhoneInput("");
+      setPhoneError(null);
       void invalidateShipments();
       requestAnimationFrame(() => {
         detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -317,6 +329,15 @@ export function App() {
           "Máy chủ chưa cấu hình API key/token cho hãng này nên chưa tra được.",
         url: res.carrierUrl,
       });
+    } else if (res.state === "phone_required") {
+      setPhonePrompt({
+        number: number ?? input.replace(/\s+/g, "").toUpperCase(),
+        message:
+          res.message ??
+          "GHN yêu cầu xác thực số điện thoại mới cho xem hành trình đơn này.",
+        carrierUrl: res.carrierUrl,
+      });
+      setFeedback(null);
     } else if (res.state === "error") {
       setFeedback({
         kind: "error",
@@ -326,8 +347,9 @@ export function App() {
   }
 
   const trackMut = useMutation({
-    mutationFn: (number: string) => api.trackPackage({ number }),
-    onSuccess: applyTrackResponse,
+    mutationFn: (args: { number: string; phone?: string | null }) =>
+      api.trackPackage(args),
+    onSuccess: (res, args) => applyTrackResponse(res, args.number),
     onError: () =>
       setFeedback({
         kind: "error",
@@ -337,7 +359,7 @@ export function App() {
 
   const refreshMut = useMutation({
     mutationFn: (number: string) => api.refreshShipment({ number }),
-    onSuccess: applyTrackResponse,
+    onSuccess: (res, number) => applyTrackResponse(res, number),
     onError: () =>
       setFeedback({
         kind: "error",
@@ -383,6 +405,8 @@ export function App() {
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setFeedback(null);
+    setPhonePrompt(null);
+    setPhoneError(null);
     const cleaned = input.replace(/\s+/g, "").toUpperCase();
     if (cleaned.length < 4) {
       setLocalError("Mã vận đơn quá ngắn — kiểm tra lại mã trên đơn hàng của bạn.");
@@ -395,7 +419,21 @@ export function App() {
       return;
     }
     setLocalError(null);
-    trackMut.mutate(cleaned);
+    trackMut.mutate({ number: cleaned });
+  }
+
+  function handlePhoneSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!phonePrompt) return;
+    const cleaned = phoneInput.replace(/[\s.\-()]/g, "");
+    if (!/^\+?\d{9,11}$/.test(cleaned)) {
+      setPhoneError(
+        "Nhập đủ số điện thoại (9–11 số, ví dụ 0901234567) — 4 số cuối không tra được.",
+      );
+      return;
+    }
+    setPhoneError(null);
+    trackMut.mutate({ number: phonePrompt.number, phone: cleaned });
   }
 
   async function handlePaste() {
@@ -536,8 +574,20 @@ export function App() {
                   <span>
                     <strong>LastScanned</strong> —{" "}
                     {apiConfig.lastScannedConfigured
-                      ? "đã cấu hình API key, tra được mã SPX khi 17TRACK chưa có kết quả."
-                      : "chưa cấu hình API key trên máy chủ, mã SPX chỉ tra được khi đã có key 17TRACK."}
+                      ? "đã cấu hình API key, tra được mã SPX khi đường trực tiếp chưa có kết quả."
+                      : "chưa cấu hình API key trên máy chủ — mã SPX vẫn tra được qua trang trực tiếp của Shopee Express, LastScanned chỉ là đường dự phòng."}
+                  </span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span
+                    className="mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: "var(--ok)" }}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <strong>GHN</strong> — tra trực tiếp qua cổng công khai
+                    của GHN, cần nhập số điện thoại người gửi hoặc người nhận
+                    để xác thực.
                   </span>
                 </li>
               </ul>
@@ -571,6 +621,64 @@ export function App() {
                 )}
               </div>
             </div>
+          )}
+
+          {phonePrompt && (
+            <form
+              onSubmit={handlePhoneSubmit}
+              className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4"
+            >
+              <p className="text-sm font-medium">{phonePrompt.message}</p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  value={phoneInput}
+                  onChange={(e) => setPhoneInput(e.target.value)}
+                  placeholder="Số điện thoại người gửi hoặc người nhận"
+                  aria-label="Số điện thoại người gửi hoặc người nhận"
+                  className="min-h-11 min-w-0 flex-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 text-sm focus:outline-2 focus:outline-[var(--accent)]"
+                />
+                <button
+                  type="submit"
+                  disabled={trackMut.isPending}
+                  className="flex min-h-11 items-center justify-center rounded-[var(--radius)] px-4 text-sm font-bold disabled:opacity-60"
+                  style={{
+                    backgroundColor: "var(--accent)",
+                    color: "var(--accent-text)",
+                  }}
+                >
+                  {trackMut.isPending ? "Đang xác thực…" : "Xác thực và tra cứu"}
+                </button>
+              </div>
+              {phoneError && (
+                <p
+                  role="alert"
+                  className="mt-2 text-sm font-medium"
+                  style={{ color: "var(--bad)" }}
+                >
+                  {phoneError}
+                </p>
+              )}
+              <p className="mt-2 text-xs text-[var(--dim)]">
+                Số điện thoại chỉ dùng để tính mã xác thực với GHN trong lần
+                tra này — web không lưu số của bạn. Mã xác thực đã mã hóa
+                được lưu trên máy bạn để lần sau bấm Cập nhật không cần nhập
+                lại.
+              </p>
+              {phonePrompt.carrierUrl && (
+                <a
+                  href={phonePrompt.carrierUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-block text-sm font-bold underline"
+                  style={{ color: "var(--accent)" }}
+                >
+                  Tra trực tiếp trên trang của hãng
+                </a>
+              )}
+            </form>
           )}
         </section>
 
@@ -728,12 +836,13 @@ export function App() {
             cứu — hết hạn mức thì phải nâng gói mới tra tiếp được qua API.
             Và API GHTK chỉ tra được các đơn thuộc đúng tài khoản shop đã
             cấp token, đơn của shop khác sẽ không tra được bằng token đó.
-            Riêng phương án dự phòng trực tiếp: một số hãng (như GHN,
-            VNPost) yêu cầu xác thực số điện thoại hoặc mã captcha ngay
-            trên trang của hãng, SPX đôi khi bị Shopee chặn tạm thời (web
-            sẽ hạ nhiệt khoảng 1 giờ rồi tự thử lại) — khi đó web báo rõ lý
-            do kèm link sang trang tra cứu của hãng. Không thấy hãng của
-            bạn? Cứ nhập mã vận đơn — 17TRACK tự nhận diện hãng theo mã.
+            Riêng phương án dự phòng trực tiếp: GHN yêu cầu nhập số
+            điện thoại người gửi hoặc người nhận để xác thực (nhập ngay trên
+            web này), VNPost yêu cầu mã captcha ngay trên trang của hãng,
+            SPX đôi khi bị Shopee chặn tạm thời (web sẽ hạ nhiệt khoảng 1
+            giờ rồi tự thử lại) — khi đó web báo rõ lý do kèm link sang
+            trang tra cứu của hãng. Không thấy hãng của bạn? Cứ nhập mã vận
+            đơn — 17TRACK tự nhận diện hãng theo mã.
           </p>
         </section>
 

@@ -17,6 +17,8 @@ export type TrackingResult = {
   number: string;
   carrierKey: number | null;
   carrierName: string | null;
+  /** GHN phone_verify hash, when the lookup needed phone verification. */
+  phoneVerify?: string | null;
   status: string;
   statusLabel: string;
   latestEvent: string | null;
@@ -28,7 +30,13 @@ export type TrackingResult = {
 };
 
 export type TrackResponse = {
-  state: "ok" | "not_found" | "carrier_unavailable" | "not_configured" | "error";
+  state:
+    | "ok"
+    | "not_found"
+    | "carrier_unavailable"
+    | "not_configured"
+    | "phone_required"
+    | "error";
   message: string | null;
   carrierName: string | null;
   carrierUrl: string | null;
@@ -79,7 +87,15 @@ function upsertFromResult(result: TrackingResult): void {
   if (idx >= 0) {
     const existing = rows[idx];
     if (existing) {
-      rows[idx] = { ...existing, ...result, lastCheckedAt: now };
+      rows[idx] = {
+        ...existing,
+        ...result,
+        // Keep the stored GHN phone_verify hash when this refresh did
+        // not need (or return) one — e.g. a refresh that went through
+        // 17TRACK instead of the GHN gateway.
+        phoneVerify: result.phoneVerify ?? existing.phoneVerify ?? null,
+        lastCheckedAt: now,
+      };
     }
   } else {
     rows.unshift({
@@ -98,6 +114,7 @@ async function postTrack(args: {
   number: string;
   carrierName?: string | null;
   carrierKey?: number | null;
+  phone?: string | null;
 }): Promise<TrackResponse> {
   const res = await fetch("/api/track", {
     method: "POST",
@@ -125,8 +142,14 @@ export const api = {
     };
   },
 
-  async trackPackage(args: { number: string }): Promise<TrackResponse> {
-    const response = await postTrack({ number: args.number });
+  async trackPackage(args: {
+    number: string;
+    phone?: string | null;
+  }): Promise<TrackResponse> {
+    const response = await postTrack({
+      number: args.number,
+      phone: args.phone ?? null,
+    });
     if (response.state === "ok" && response.result) {
       upsertFromResult(response.result);
     }
@@ -139,6 +162,9 @@ export const api = {
       number: args.number,
       carrierName: saved?.carrierName ?? null,
       carrierKey: saved?.carrierKey ?? null,
+      // Reuse the stored GHN phone_verify hash so a verified order can
+      // be refreshed without asking for the phone number again.
+      phone: saved?.phoneVerify ?? null,
     });
     if (response.state === "ok" && response.result) {
       upsertFromResult(response.result);
@@ -158,12 +184,14 @@ export const api = {
     let failed = 0;
     let unavailable = 0;
     let notConfigured = 0;
+    let phoneRequired = 0;
     for (const row of rows) {
       if (row.status === "Delivered") continue;
       const response = await postTrack({
         number: row.number,
         carrierName: row.carrierName,
         carrierKey: row.carrierKey,
+        phone: row.phoneVerify ?? null,
       });
       if (response.state === "ok" && response.result) {
         upsertFromResult(response.result);
@@ -172,6 +200,8 @@ export const api = {
         unavailable += 1;
       } else if (response.state === "not_configured") {
         notConfigured += 1;
+      } else if (response.state === "phone_required") {
+        phoneRequired += 1;
       } else {
         failed += 1;
       }
@@ -184,6 +214,11 @@ export const api = {
     if (notConfigured > 0) {
       parts.push(
         `${notConfigured} đơn chưa tra được vì máy chủ chưa cấu hình API key/token của hãng đó`,
+      );
+    }
+    if (phoneRequired > 0) {
+      parts.push(
+        `${phoneRequired} đơn GHN cần nhập số điện thoại để xác thực lại`,
       );
     }
     if (failed > 0) parts.push(`${failed} đơn chưa tra được`);

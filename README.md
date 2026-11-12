@@ -21,7 +21,9 @@ công khai cho mọi người dùng.
     không có kết quả thì thử qua API LastScanned khi đã cấu hình
     `LASTSCANNED_API_KEY`, rồi mới gọi trực tiếp sang SPX; SPX có hạ nhiệt
     60 phút sau khi bị
-    Shopee chặn chống bot; GHN cần xác thực SĐT, VNPost có captcha, Viettel
+    Shopee chặn chống bot; GHN tra được khi người dùng nhập SĐT người gửi/người nhận
+    (máy chủ băm SHA-256 `mã|SĐT` thành phone_verify gửi GHN, không lưu SĐT;
+    4 số cuối không đủ để tính mã băm), VNPost có captcha, Viettel
     Post/DHL/UPS/FedEx có tường bot, J&T/Ninja Van/BEST không có endpoint
     công khai — tất cả đều báo rõ lý do bằng tiếng Việt kèm link trang hãng,
     không bịa dữ liệu).

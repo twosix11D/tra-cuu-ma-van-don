@@ -34,6 +34,8 @@
 // function instance (best-effort), but the behavior — stop calling SPX
 // for 60 minutes after a block and say so — is unchanged.
 
+import { createHash } from "node:crypto";
+
 // ---------------------------------------------------------------------------
 // Vietnamese labels for the normalized main statuses (same vocabulary the
 // client already renders; identical to 17TRACK's 9 main statuses).
@@ -77,6 +79,13 @@ export type TrackingResult = {
   originCountry: string | null;
   destinationCountry: string | null;
   events: TrackingEvent[];
+  /**
+   * GHN phone_verify hash (sha256 of "CODE|phone"), set only when a GHN
+   * lookup succeeded with phone verification. The client stores it on
+   * its own device so a later refresh can reuse it without asking for
+   * the phone number again. Never the raw phone number.
+   */
+  phoneVerify?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -396,13 +405,22 @@ type AdapterResult =
       statusText: string | null;
       events: TrackingEvent[];
       estimatedDelivery: string | null;
+      phoneVerify?: string | null;
     }
   | { kind: "not_found" }
-  | { kind: "blocked"; reason: string; specific?: boolean };
+  | { kind: "blocked"; reason: string; specific?: boolean }
+  | { kind: "phone_required"; reason: string };
 
 type AdapterContext = {
   /** LastScanned API key for the SPX adapter (null = adapter skipped). */
   lastScannedApiKey: string | null;
+  /**
+   * GHN verification credential supplied by the user for this lookup:
+   * either the full recipient/sender phone number (hashed server-side)
+   * or a 64-hex phone_verify token from an earlier verified lookup.
+   * Never stored or logged; lives only in this request.
+   */
+  ghnCredential: string | null;
 };
 
 type CarrierDef = {
@@ -683,13 +701,57 @@ async function fetchSpxChain(
 }
 
 // --- GHN: public gateway, but phone verification gates the journey. ----
-async function fetchGhn(number: string): Promise<AdapterResult> {
+//
+// The gateway accepts `phone_verify` = sha256("<ORDER_CODE>|<phone>")
+// (lowercase hex), or a 64-hex phone_verify token from an earlier
+// verified call. The FULL phone number is required: the last 4 digits
+// alone cannot reproduce the hash. The raw phone is never stored or
+// logged — only the hash is sent to GHN, and the hash is returned to
+// the client so a later refresh can reuse it without asking for the
+// phone again. (Mechanism verified against the live gateway and the
+// working naminc/spx-tracking-bot GHN service, 2026-11-13.)
+const GHN_PHONE_VERIFY_PATTERN = /^[a-f0-9]{64}$/i;
+
+function normalizeVietnamPhone(value: string): string {
+  let normalized = value.replace(/[\s.\-()]/g, "");
+  if (normalized.startsWith("+84")) normalized = `0${normalized.slice(3)}`;
+  else if (normalized.startsWith("84") && normalized.length >= 10)
+    normalized = `0${normalized.slice(2)}`;
+  else if (normalized !== "" && !normalized.startsWith("0"))
+    normalized = `0${normalized}`;
+  if (normalized.length < 9 || !/^\d+$/.test(normalized)) return "";
+  return normalized;
+}
+
+function resolveGhnPhoneVerify(
+  number: string,
+  credential: string | null | undefined,
+): string | null {
+  const trimmed = credential?.trim() ?? "";
+  if (!trimmed) return null;
+  if (GHN_PHONE_VERIFY_PATTERN.test(trimmed)) return trimmed.toLowerCase();
+  const phone = normalizeVietnamPhone(trimmed);
+  if (!phone) return null;
+  return createHash("sha256")
+    .update(`${number.trim().toUpperCase()}|${phone}`)
+    .digest("hex");
+}
+
+async function fetchGhn(
+  number: string,
+  ctx?: AdapterContext,
+): Promise<AdapterResult> {
+  const phoneVerify = resolveGhnPhoneVerify(number, ctx?.ghnCredential);
   const outcome = await fetchCarrier(
     "https://fe-online-gateway.ghn.vn/order-tracking/public-api/client/tracking-logs",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order_code: number }),
+      body: JSON.stringify(
+        phoneVerify
+          ? { order_code: number, phone_verify: phoneVerify }
+          : { order_code: number },
+      ),
     },
   );
   if (outcome.kind === "network") {
@@ -706,17 +768,56 @@ async function fetchGhn(number: string): Promise<AdapterResult> {
   const codeMessage = asString(root?.code_message);
   if (codeMessage === "PHONE_VERIFY_REQUIRED") {
     return {
-      kind: "blocked",
-      specific: true,
+      kind: "phone_required",
       reason:
-        "GHN yêu cầu xác thực số điện thoại của người gửi hoặc người nhận trên trang donhang.ghn.vn mới cho xem hành trình, nên web chưa lấy được dữ liệu GHN tự động. Bạn tra mã này trực tiếp trên trang của GHN nhé.",
+        "GHN yêu cầu xác thực số điện thoại của người gửi hoặc người nhận mới cho xem hành trình đơn này. Nhập số điện thoại đầy đủ (không dùng 4 số cuối) vào ô bên dưới để tra cứu.",
     };
   }
-  const data = root?.data;
-  const events = data != null ? extractEvents(data) : [];
-  const statusText = data != null ? findStatusText(data) : null;
-  if (events.length === 0 && !statusText) return { kind: "not_found" };
-  return { kind: "ok", statusText, events, estimatedDelivery: null };
+  if (codeMessage === "PHONE_VERIFY_FAIL") {
+    return {
+      kind: "phone_required",
+      reason:
+        "Số điện thoại vừa nhập chưa khớp với đơn này. Thử số điện thoại của người gửi, hoặc của người nhận.",
+    };
+  }
+  const code = typeof root?.code === "number" ? root.code : null;
+  if (code !== null && code !== 200) {
+    return {
+      kind: "blocked",
+      reason: asString(root?.message) || blockedReason("GHN"),
+    };
+  }
+  const data = asRecord(root?.data);
+  const orderInfo = asRecord(data?.order_info);
+  const rawLogs = Array.isArray(data?.tracking_logs)
+    ? data.tracking_logs
+    : [];
+  const logs = rawLogs
+    .map((entry): TrackingEvent | null => {
+      const log = asRecord(entry);
+      if (!log) return null;
+      const time = normalizeTime(log.action_at);
+      const description = asString(log.status_name) ?? asString(log.status);
+      if (!time || !description) return null;
+      const location = asRecord(log.location);
+      return {
+        time,
+        description,
+        location: asString(location?.address) ?? asString(log.location),
+      };
+    })
+    .filter((e): e is TrackingEvent => e !== null)
+    .sort((a, b) => (b.time ?? "").localeCompare(a.time ?? ""));
+  const statusText =
+    logs[0]?.description ?? asString(orderInfo?.status_name) ?? null;
+  if (logs.length === 0 && !statusText) return { kind: "not_found" };
+  return {
+    kind: "ok",
+    statusText,
+    events: logs,
+    estimatedDelivery: normalizeTime(orderInfo?.leadtime),
+    phoneVerify,
+  };
 }
 
 // --- Viettel Post: public API behind a Cloudflare bot wall. ------------
@@ -1004,6 +1105,12 @@ export type LookupOutcome =
       carrierUrl: string | null;
     }
   | {
+      state: "phone_required";
+      message: string;
+      carrierName: string | null;
+      carrierUrl: string | null;
+    }
+  | {
       state: "not_configured";
       message: string;
       carrierName: string | null;
@@ -1035,6 +1142,7 @@ async function lookupDirect(
   }
 
   const blocked: { carrier: CarrierDef; reason: string; specific: boolean }[] = [];
+  let phoneRequired: { carrier: CarrierDef; reason: string } | null = null;
   let firstNotFound: CarrierDef | null = null;
 
   for (const carrier of candidates) {
@@ -1053,13 +1161,18 @@ async function lookupDirect(
           latestEvent: latest?.description ?? outcome.statusText,
           latestEventTime: latest?.time ?? null,
           estimatedDelivery: outcome.estimatedDelivery,
+          phoneVerify: outcome.phoneVerify ?? null,
           originCountry: null,
           destinationCountry: null,
           events: outcome.events,
         },
       };
     }
-    if (outcome.kind === "blocked") {
+    if (outcome.kind === "phone_required") {
+      if (!phoneRequired) {
+        phoneRequired = { carrier, reason: outcome.reason };
+      }
+    } else if (outcome.kind === "blocked") {
       blocked.push({
         carrier,
         reason: outcome.reason,
@@ -1068,6 +1181,15 @@ async function lookupDirect(
     } else if (!firstNotFound) {
       firstNotFound = carrier;
     }
+  }
+
+  if (phoneRequired) {
+    return {
+      state: "phone_required",
+      message: phoneRequired.reason,
+      carrierName: phoneRequired.carrier.name,
+      carrierUrl: phoneRequired.carrier.url,
+    };
   }
 
   const firstBlocked = blocked[0];
@@ -1557,6 +1679,7 @@ export async function lookupTrackingNumber(
   number: string,
   preferred: { carrierName: string | null; carrierKey: number | null },
   config: ApiConfig,
+  ghnCredential?: string | null,
 ): Promise<LookupOutcome> {
   if (isGhtkFormat(number) || preferred.carrierName === GHTK_CARRIER_NAME) {
     return lookupGhtkApi(number, config);
@@ -1582,6 +1705,7 @@ export async function lookupTrackingNumber(
 
   const direct = await lookupDirect(number, preferred.carrierName, {
     lastScannedApiKey: config.lastScannedApiKey,
+    ghnCredential: ghnCredential ?? null,
   });
   if (direct.state === "ok") return direct;
   if (apiPending && direct.state === "not_found") {
@@ -1622,7 +1746,13 @@ export async function lookupTrackingNumber(
 // ---------------------------------------------------------------------------
 
 export type TrackResponseBody = {
-  state: "ok" | "not_found" | "carrier_unavailable" | "not_configured" | "error";
+  state:
+    | "ok"
+    | "not_found"
+    | "carrier_unavailable"
+    | "not_configured"
+    | "phone_required"
+    | "error";
   message: string | null;
   carrierName: string | null;
   carrierUrl: string | null;
