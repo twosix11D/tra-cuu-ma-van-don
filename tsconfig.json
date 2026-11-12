@@ -1,0 +1,1 @@
+{"compilerOptions":{"forceConsistentCasingInFileNames":true,"jsx":"react-jsx","lib":["ES2022","DOM","DOM.Iterable"],"module":"ESNext","moduleResolution":"bundler","noUncheckedIndexedAccess":true,"skipLibCheck":true,"strict":true,"target":"ES2022","types":["node"],"verbatimModuleSyntax":true},"include":["src","api","vite.config.ts"]}

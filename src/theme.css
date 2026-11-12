@@ -1,0 +1,73 @@
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --text-5xl: 48px;
+  --text-5xl--line-height: 52px;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --surface-alt: #e6ebf1;
+  --text: #16283f;
+  --dim: #5b6b7d;
+  --border: #d3dbe4;
+  --accent: #e8590c;
+  --accent-text: #ffffff;
+  --navy: #16283f;
+  --ok: #1e9e62;
+  --bad: #d64545;
+  --warn: #b7791f;
+  --radius: 10px;
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface-alt);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1622;
+    --surface: #16283f;
+    --surface-alt: #1e344f;
+    --text: #eef3f8;
+    --dim: #9db0c3;
+    --border: #2b4258;
+    --accent: #f0762a;
+    --accent-text: #ffffff;
+    --navy: #0d1622;
+    --ok: #3ecf8e;
+    --bad: #ff7a72;
+    --warn: #e8b34b;
+  }
+}
+
+/* Phone tap targets: at least 32px tall. */
+@layer base {
+  button, [role="button"], select, summary, input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2rem;
+  }
+  body {
+    font-family: var(--font-sans);
+  }
+}
