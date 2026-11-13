@@ -1,4 +1,10 @@
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useId,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -97,6 +103,52 @@ const XIcon = ({ size }: { size?: number }) => (
     <path d="m6 6 12 12" />
   </Icon>
 );
+
+// ---------------------------------------------------------------------------
+// Brand logo: orange gradient tile with a white isometric parcel.
+// Same artwork as public/favicon.svg (kept inline so the header and the
+// footer render it without an extra fetch).
+// ---------------------------------------------------------------------------
+
+function LogoMark({ size = 36 }: { size?: number }) {
+  const gradientId = useId();
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 64 64"
+      role="img"
+      aria-label="Tra cứu mã vận đơn"
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#fb923c" />
+          <stop offset="1" stopColor="#ea580c" />
+        </linearGradient>
+      </defs>
+      <rect x="2" y="2" width="60" height="60" rx="16" fill={`url(#${gradientId})`} />
+      <path d="M32 13 L50 22 L32 31 L14 22 Z" fill="#ffffff" />
+      <path d="M14 22 L32 31 L32 50 L14 41 Z" fill="#ffffff" fillOpacity="0.72" />
+      <path d="M50 22 L32 31 L32 50 L50 41 Z" fill="#ffffff" fillOpacity="0.5" />
+    </svg>
+  );
+}
+
+function Brand({ size = 36 }: { size?: number }) {
+  return (
+    <span className="flex items-center gap-2.5">
+      <LogoMark size={size} />
+      <span className="leading-tight">
+        <span className="block text-[15px] font-extrabold tracking-tight">
+          Tra cứu mã vận đơn
+        </span>
+        <span className="block text-xs font-medium text-[var(--dim)]">
+          Mọi hãng vận chuyển
+        </span>
+      </span>
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -463,11 +515,42 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
+      {/* ------- Header ------- */}
+      <header
+        className="sticky top-0 z-10 border-b border-[var(--border)]"
+        style={{
+          backgroundColor: "color-mix(in srgb, var(--bg) 88%, transparent)",
+          backdropFilter: "blur(10px)",
+          WebkitBackdropFilter: "blur(10px)",
+        }}
+      >
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3 px-4 py-3">
+          <Brand />
+          <span className="hidden items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs font-semibold sm:inline-flex">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: "var(--ok)" }}
+              aria-hidden="true"
+            />
+            3.400+ hãng vận chuyển
+          </span>
+        </div>
+      </header>
+
       <main className="mx-auto w-full max-w-3xl px-4 pb-12">
         {/* ------- Lookup ------- */}
         <section className="pt-7">
-          <h1 className="text-3xl font-extrabold leading-tight tracking-tight">
-            Đơn hàng của bạn đang ở đâu?
+          <p className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface-alt)] px-3 py-1 text-xs font-semibold">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: "var(--ok)" }}
+              aria-hidden="true"
+            />
+            Miễn phí · Không cần đăng nhập
+          </p>
+          <h1 className="mt-3 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">
+            Đơn hàng của bạn{" "}
+            <span style={{ color: "var(--accent)" }}>đang ở đâu?</span>
           </h1>
           <p className="mt-2 text-base text-[var(--dim)]">
             Nhập mã vận đơn của bất kỳ hãng nào — hệ thống tra qua API
@@ -475,7 +558,8 @@ export function App() {
             bộ hành trình đơn hàng.
           </p>
 
-          <form onSubmit={handleSubmit} className="mt-5">
+          <div className="shadow-card mt-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5">
+            <form onSubmit={handleSubmit}>
             <label
               htmlFor="tracking-number"
               className="text-sm font-semibold"
@@ -521,7 +605,8 @@ export function App() {
               <SearchIcon size={20} />
               {trackMut.isPending ? "Đang tra cứu…" : "Tra cứu"}
             </button>
-          </form>
+            </form>
+          </div>
 
           {apiConfig && (
             <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -846,11 +931,19 @@ export function App() {
           </p>
         </section>
 
-        <footer className="mt-12 border-t border-[var(--border)] pt-4 text-xs text-[var(--dim)]">
-          Hành trình đơn hàng được lấy qua API 17TRACK / API GHTK tại thời
-          điểm bạn bấm tra cứu hoặc cập nhật, dự phòng bằng dữ liệu trực
-          tiếp từ trang tra cứu công khai của hãng. Đơn mới tạo có thể mất
-          vài giờ mới xuất hiện dữ liệu.
+        <footer className="mt-12 border-t border-[var(--border)] pt-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Brand size={30} />
+            <p className="text-xs font-medium text-[var(--dim)]">
+              Tra cứu nhanh · Chính xác · Miễn phí
+            </p>
+          </div>
+          <p className="mt-3 text-xs leading-relaxed text-[var(--dim)]">
+            Hành trình đơn hàng được lấy qua API 17TRACK / API GHTK tại thời
+            điểm bạn bấm tra cứu hoặc cập nhật, dự phòng bằng dữ liệu trực
+            tiếp từ trang tra cứu công khai của hãng. Đơn mới tạo có thể mất
+            vài giờ mới xuất hiện dữ liệu.
+          </p>
         </footer>
       </main>
     </div>
@@ -883,7 +976,7 @@ function DetailPanel({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   return (
-    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-5">
+    <div className="shadow-card rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-[var(--dim)]">
