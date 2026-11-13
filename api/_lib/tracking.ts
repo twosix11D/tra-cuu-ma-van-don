@@ -1085,36 +1085,48 @@ function isGhtkFormat(number: string): boolean {
   return carrierById("ghtk")?.detect(number) ?? false;
 }
 
+// Strict matches are carriers whose own waybill pattern claims the code;
+// fallback guesses are format-class heuristics for codes no strict pattern
+// claimed (e.g. any alphanumeric code is guessed as GHN). The two groups
+// must stay separate: a fallback guess must never override a strict match.
+// GHN's gateway answers PHONE_VERIFY_REQUIRED for any code sent without a
+// phone hash — it never checks whether the code exists first — so letting
+// the GHN guess answer first turned e.g. a VNPost EMS code (S10,
+// EE123456789VN) into a "GHN wants your phone number" prompt.
 function candidateCarriers(
   number: string,
   preferredCarrierName: string | null,
-): CarrierDef[] {
-  const list: CarrierDef[] = [];
-  const add = (c: CarrierDef | null): void => {
-    if (c && !list.includes(c)) list.push(c);
+): { strict: CarrierDef[]; fallback: CarrierDef[] } {
+  const strict: CarrierDef[] = [];
+  const fallback: CarrierDef[] = [];
+  const addStrict = (c: CarrierDef | null): void => {
+    if (c && !strict.includes(c) && !fallback.includes(c)) strict.push(c);
+  };
+  const addFallback = (c: CarrierDef | null): void => {
+    if (c && !strict.includes(c) && !fallback.includes(c)) fallback.push(c);
   };
   if (preferredCarrierName) {
-    add(CARRIERS.find((c) => c.name === preferredCarrierName) ?? null);
+    addStrict(CARRIERS.find((c) => c.name === preferredCarrierName) ?? null);
   }
   for (const c of CARRIERS) {
-    if (c.detect(number)) add(c);
+    if (c.detect(number)) addStrict(c);
   }
   // Format-class fallbacks for codes no strict pattern claimed.
   if (/^\d{9,13}$/.test(number)) {
-    add(carrierById("viettelpost"));
-    if (number.length === 10) add(carrierById("dhl"));
-    if (number.length === 12 || number.length === 15) add(carrierById("fedex"));
-    if (/^8\d{11}$/.test(number)) add(carrierById("jnt"));
+    addFallback(carrierById("viettelpost"));
+    if (number.length === 10) addFallback(carrierById("dhl"));
+    if (number.length === 12 || number.length === 15) addFallback(carrierById("fedex"));
+    if (/^8\d{11}$/.test(number)) addFallback(carrierById("jnt"));
   }
   if (
     /^[A-Z0-9]{6,18}$/.test(number) &&
     /[A-Z]/.test(number) &&
     /\d/.test(number)
   ) {
-    add(carrierById("ghn"));
-    add(carrierById("ninjavan"));
+    addFallback(carrierById("ghn"));
+    addFallback(carrierById("ninjavan"));
   }
-  return list;
+  return { strict, fallback };
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,7 +1173,11 @@ async function lookupDirect(
   preferredCarrierName: string | null,
   ctx?: AdapterContext,
 ): Promise<LookupOutcome> {
-  const candidates = candidateCarriers(number, preferredCarrierName);
+  const { strict, fallback } = candidateCarriers(number, preferredCarrierName);
+  // A code a strict pattern claimed belongs to that carrier: never let a
+  // fallback guess (GHN's phone prompt) answer for it. Guesses are only
+  // tried when no strict pattern matched at all.
+  const candidates = strict.length > 0 ? strict : fallback;
   if (candidates.length === 0) {
     return {
       state: "not_found",
@@ -1759,7 +1775,10 @@ export async function lookupTrackingNumber(
   if (
     direct.state === "not_found" &&
     !config.track17ApiKey &&
-    candidateCarriers(number, preferred.carrierName).length === 0
+    (() => {
+      const c = candidateCarriers(number, preferred.carrierName);
+      return c.strict.length === 0 && c.fallback.length === 0;
+    })()
   ) {
     return {
       state: "not_configured",
