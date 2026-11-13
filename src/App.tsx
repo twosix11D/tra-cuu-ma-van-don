@@ -331,6 +331,17 @@ export function App() {
   } | null>(null);
   const [phoneInput, setPhoneInput] = useState("");
   const [phoneError, setPhoneError] = useState<string | null>(null);
+  // Manual-redirect panel (spec 4.2 MANUAL_REDIRECT_REQUIRED): the carrier
+  // requires verification on its own official tracking page and offers no
+  // resumable in-website mechanism. The user opens the carrier page
+  // themselves; the site never asks for their carrier password/OTP.
+  const [manualRedirect, setManualRedirect] = useState<{
+    number: string;
+    carrierName: string | null;
+    message: string;
+    carrierUrl: string | null;
+  } | null>(null);
+  const [copiedCode, setCopiedCode] = useState(false);
   const detailRef = useRef<HTMLElement | null>(null);
 
   const shipmentsQuery = useQuery({
@@ -349,6 +360,7 @@ export function App() {
     queryClient.invalidateQueries({ queryKey: ["shipments"] });
 
   function applyTrackResponse(res: TrackResponse, number?: string) {
+    if (res.state !== "manual_redirect_required") setManualRedirect(null);
     if (res.state === "ok" && res.result) {
       setLastResult(res.result);
       setSelectedNumber(res.result.number);
@@ -381,6 +393,17 @@ export function App() {
           "Máy chủ chưa cấu hình API key/token cho hãng này nên chưa tra được.",
         url: res.carrierUrl,
       });
+    } else if (res.state === "manual_redirect_required") {
+      setManualRedirect({
+        number: number ?? input.replace(/\s+/g, "").toUpperCase(),
+        carrierName: res.carrierName,
+        message:
+          res.message ??
+          "Hãng này yêu cầu xác minh trên trang tra cứu chính thức mới cho xem hành trình.",
+        carrierUrl: res.carrierUrl,
+      });
+      setPhonePrompt(null);
+      setFeedback(null);
     } else if (res.state === "phone_required") {
       setPhonePrompt({
         number: number ?? input.replace(/\s+/g, "").toUpperCase(),
@@ -705,6 +728,69 @@ export function App() {
                   </a>
                 )}
               </div>
+            </div>
+          )}
+
+          {manualRedirect && (
+            <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+              <p className="text-sm font-bold">
+                {manualRedirect.carrierName ?? "Hãng vận chuyển"} yêu cầu xác
+                minh trên trang chính thức
+              </p>
+              <p className="mt-1 text-sm">{manualRedirect.message}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <code className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm font-bold tracking-wide">
+                  {manualRedirect.number}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const done = () => {
+                      setCopiedCode(true);
+                      window.setTimeout(() => setCopiedCode(false), 2000);
+                    };
+                    if (navigator.clipboard?.writeText) {
+                      navigator.clipboard
+                        .writeText(manualRedirect.number)
+                        .then(done)
+                        .catch(() => done());
+                    } else {
+                      done();
+                    }
+                  }}
+                  className="flex min-h-10 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-3 text-sm font-semibold"
+                >
+                  {copiedCode ? "Đã sao chép" : "Sao chép mã"}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {manualRedirect.carrierUrl && (
+                  <a
+                    href={manualRedirect.carrierUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex min-h-11 items-center justify-center rounded-[var(--radius)] px-4 text-sm font-bold"
+                    style={{
+                      backgroundColor: "var(--accent)",
+                      color: "var(--accent-text)",
+                    }}
+                  >
+                    Mở trang tra cứu của hãng
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setManualRedirect(null)}
+                  className="flex min-h-11 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg)] px-4 text-sm font-semibold"
+                >
+                  Để sau
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--dim)]">
+                Bạn tự xác minh trên trang chính thức của hãng rồi xem hành
+                trình ở đó — web không yêu cầu mật khẩu, cookie hay mã OTP tài
+                khoản hãng của bạn.
+              </p>
             </div>
           )}
 

@@ -412,7 +412,13 @@ type AdapterResult =
     }
   | { kind: "not_found" }
   | { kind: "blocked"; reason: string; specific?: boolean }
-  | { kind: "phone_required"; reason: string };
+  | { kind: "phone_required"; reason: string }
+  // The carrier requires the visitor to verify on its own official
+  // tracking page (captcha / bot check) and offers no resumable
+  // in-website mechanism: the user must open the carrier page
+  // (MANUAL_REDIRECT_REQUIRED). Never a bypass: the server does not
+  // solve, mint or forward captcha tokens, cookies or sessions.
+  | { kind: "manual_redirect"; reason: string };
 
 type AdapterContext = {
   /** LastScanned API key for the SPX adapter (null = adapter skipped). */
@@ -853,7 +859,7 @@ async function fetchViettelPost(number: string): Promise<AdapterResult> {
     };
   }
   if (outcome.kind !== "json") {
-    return { kind: "blocked", reason: blockedReason("Viettel Post") };
+    return { kind: "manual_redirect", reason: blockedReason("Viettel Post") };
   }
   const events = extractEvents(outcome.json);
   const statusText = findStatusText(outcome.json);
@@ -875,7 +881,7 @@ async function fetchDhl(number: string): Promise<AdapterResult> {
     };
   }
   if (outcome.kind !== "json") {
-    return { kind: "blocked", reason: blockedReason("DHL") };
+    return { kind: "manual_redirect", reason: blockedReason("DHL") };
   }
   const events = extractEvents(outcome.json);
   const statusText = findStatusText(outcome.json);
@@ -900,7 +906,7 @@ async function fetchJnt(number: string): Promise<AdapterResult> {
     if (events.length === 0 && !statusText) return { kind: "not_found" };
     return { kind: "ok", statusText, events, estimatedDelivery: null };
   }
-  return { kind: "blocked", reason: blockedReason("J&T Express") };
+  return { kind: "manual_redirect", reason: blockedReason("J&T Express") };
 }
 
 // --- FedEx / UPS: tracking sits behind Akamai bot checks. --------------
@@ -913,7 +919,7 @@ async function fetchFedex(number: string): Promise<AdapterResult> {
     if (events.length === 0 && !statusText) return { kind: "not_found" };
     return { kind: "ok", statusText, events, estimatedDelivery: null };
   }
-  return { kind: "blocked", reason: blockedReason("FedEx") };
+  return { kind: "manual_redirect", reason: blockedReason("FedEx") };
 }
 
 async function fetchUps(number: string): Promise<AdapterResult> {
@@ -924,14 +930,13 @@ async function fetchUps(number: string): Promise<AdapterResult> {
     if (events.length === 0 && !statusText) return { kind: "not_found" };
     return { kind: "ok", statusText, events, estimatedDelivery: null };
   }
-  return { kind: "blocked", reason: blockedReason("UPS") };
+  return { kind: "manual_redirect", reason: blockedReason("UPS") };
 }
 
 // --- Carriers with no unauthenticated public tracking endpoint. --------
 function noPublicEndpoint(name: string, detail: string): AdapterResult {
   return {
-    kind: "blocked",
-    specific: true,
+    kind: "manual_redirect",
     reason: `${name} ${detail} Bạn tra mã này trực tiếp trên trang/ứng dụng của ${name} nhé — các hãng khác vẫn tra bình thường tại đây.`,
   };
 }
@@ -1057,14 +1062,14 @@ const CARRIERS: CarrierDef[] = [
   {
     id: "dhl",
     name: "DHL Express",
-    url: null,
+    url: "https://www.dhl.com/vn-en/home/tracking.html",
     detect: (n) => /^\d{10}$/.test(n) || /^JJD[0-9A-Z]{7,}$/i.test(n),
     fetchTracking: fetchDhl,
   },
   {
     id: "fedex",
     name: "FedEx",
-    url: null,
+    url: "https://www.fedex.com/en-vn/tracking.html",
     detect: (n) => /^(\d{12}|\d{15}|\d{20}|\d{22})$/.test(n),
     fetchTracking: fetchFedex,
   },
@@ -1159,6 +1164,12 @@ export type LookupOutcome =
       carrierName: string | null;
       carrierUrl: string | null;
     }
+  | {
+      state: "manual_redirect_required";
+      message: string;
+      carrierName: string | null;
+      carrierUrl: string | null;
+    }
   | { state: "error"; message: string };
 
 // ---------------------------------------------------------------------------
@@ -1190,6 +1201,7 @@ async function lookupDirect(
 
   const blocked: { carrier: CarrierDef; reason: string; specific: boolean }[] = [];
   let phoneRequired: { carrier: CarrierDef; reason: string } | null = null;
+  let manualRedirect: { carrier: CarrierDef; reason: string } | null = null;
   let firstNotFound: CarrierDef | null = null;
 
   for (const carrier of candidates) {
@@ -1219,6 +1231,10 @@ async function lookupDirect(
       if (!phoneRequired) {
         phoneRequired = { carrier, reason: outcome.reason };
       }
+    } else if (outcome.kind === "manual_redirect") {
+      if (!manualRedirect) {
+        manualRedirect = { carrier, reason: outcome.reason };
+      }
     } else if (outcome.kind === "blocked") {
       blocked.push({
         carrier,
@@ -1236,6 +1252,15 @@ async function lookupDirect(
       message: phoneRequired.reason,
       carrierName: phoneRequired.carrier.name,
       carrierUrl: resolveCarrierUrl(phoneRequired.carrier, number),
+    };
+  }
+
+  if (manualRedirect) {
+    return {
+      state: "manual_redirect_required",
+      message: manualRedirect.reason,
+      carrierName: manualRedirect.carrier.name,
+      carrierUrl: resolveCarrierUrl(manualRedirect.carrier, number),
     };
   }
 
@@ -1802,6 +1827,7 @@ export type TrackResponseBody = {
     | "carrier_unavailable"
     | "not_configured"
     | "phone_required"
+    | "manual_redirect_required"
     | "error";
   message: string | null;
   carrierName: string | null;

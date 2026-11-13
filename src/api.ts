@@ -36,6 +36,7 @@ export type TrackResponse = {
     | "carrier_unavailable"
     | "not_configured"
     | "phone_required"
+    | "manual_redirect_required"
     | "error";
   message: string | null;
   carrierName: string | null;
@@ -185,6 +186,7 @@ export const api = {
     let unavailable = 0;
     let notConfigured = 0;
     let phoneRequired = 0;
+    let manualRedirect = 0;
     for (const row of rows) {
       if (row.status === "Delivered") continue;
       const response = await postTrack({
@@ -202,6 +204,8 @@ export const api = {
         notConfigured += 1;
       } else if (response.state === "phone_required") {
         phoneRequired += 1;
+      } else if (response.state === "manual_redirect_required") {
+        manualRedirect += 1;
       } else {
         failed += 1;
       }
@@ -219,6 +223,11 @@ export const api = {
     if (phoneRequired > 0) {
       parts.push(
         `${phoneRequired} đơn GHN cần nhập số điện thoại để xác thực lại`,
+      );
+    }
+    if (manualRedirect > 0) {
+      parts.push(
+        `${manualRedirect} đơn cần xác minh trên trang chính thức của hãng`,
       );
     }
     if (failed > 0) parts.push(`${failed} đơn chưa tra được`);
