@@ -23,7 +23,10 @@ công khai cho mọi người dùng.
     60 phút sau khi bị
     Shopee chặn chống bot; GHN tra được khi người dùng nhập SĐT người gửi/người nhận
     (máy chủ băm SHA-256 `mã|SĐT` thành phone_verify gửi GHN, không lưu SĐT;
-    4 số cuối không đủ để tính mã băm), VNPost có captcha, Viettel
+    4 số cuối không đủ để tính mã băm); GHTK có trang tra cứu công khai
+    i.ghtk.vn nhưng mỗi lần tra cần token reCAPTCHA tạo trong trình duyệt
+    nên máy chủ không gọi trực tiếp được — web đưa link 1 chạm
+    `i.ghtk.vn/<mã>` mở thẳng trang tra cứu với mã đã điền sẵn; VNPost có captcha, Viettel
     Post/DHL/UPS/FedEx có tường bot, J&T/Ninja Van/BEST không có endpoint
     công khai — tất cả đều báo rõ lý do bằng tiếng Việt kèm link trang hãng,
     không bịa dữ liệu).

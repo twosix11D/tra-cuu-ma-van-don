@@ -12,7 +12,10 @@
 // 3. Fallback: per-carrier direct adapters over each carrier's public
 //    tracking page (SPX with a remembered 60-minute anti-bot cooldown,
 //    GHN phone verification, VNPost captcha, bot walls elsewhere — all
-//    reported honestly, never circumvented). SPX only: the primary path is
+//    reported honestly, never circumvented. GHTK has a public page
+//    (i.ghtk.vn) but each lookup needs a browser-minted reCAPTCHA token,
+//    so the server links one-tap to i.ghtk.vn/<code> instead of fetching
+//    it (see fetchGhtkDirect). SPX only: the primary path is
 //    now the get_order_info endpoint (see fetchSpxOrderInfo), which answers
 //    with the full journey and no key from datacenter IPs; when
 //    LASTSCANNED_API_KEY is set, SPX codes are also tried through the
@@ -426,14 +429,27 @@ type AdapterContext = {
 type CarrierDef = {
   id: string;
   name: string;
-  /** Official public tracking page (verified by a live fetch). */
-  url: string | null;
+  /**
+   * Official public tracking page (verified by a live fetch). May be a
+   * function building a one-tap link with the code already in the URL
+   * (e.g. GHTK's i.ghtk.vn/<code>).
+   */
+  url: string | null | ((number: string) => string | null);
   detect: (number: string) => boolean;
   fetchTracking: (
     number: string,
     ctx?: AdapterContext,
   ) => Promise<AdapterResult>;
 };
+
+function resolveCarrierUrl(
+  carrier: CarrierDef,
+  number: string,
+): string | null {
+  return typeof carrier.url === "function"
+    ? carrier.url(number)
+    : carrier.url;
+}
 
 function blockedReason(name: string): string {
   return `${name} đang chặn lấy dữ liệu tự động (kiểm tra bot/captcha) hoặc vừa đổi cấu trúc trang tra cứu nên tạm thời chưa tra tự động được. Các hãng khác vẫn tra bình thường — bạn có thể tra mã này trực tiếp trên trang của ${name}.`;
@@ -920,10 +936,21 @@ function noPublicEndpoint(name: string, detail: string): AdapterResult {
   };
 }
 
+// GHTK does have a public tracking page now (i.ghtk.vn, "Tracking đơn
+// hàng chỉ 1 chạm", verified 2026-11-13): its API
+// (GET iggw-service.giaohangtietkiem.vn/api/v2/package-tracking/get-package)
+// answers from datacenter IPs with proper JSON, but every lookup requires
+// a valid reCAPTCHA token (RType/RToken headers; invisible score token by
+// default, checkbox when challenged) minted by Google's reCAPTCHA in a
+// real browser on i.ghtk.vn — a dummy token is rejected with
+// invalid_captcha, and a server cannot mint a valid one. So the server
+// cannot fetch GHTK journeys directly; instead the carrier link below is
+// a one-tap i.ghtk.vn/<code> URL that opens the tracking page with the
+// code already filled in, and the visitor completes the captcha there.
 async function fetchGhtkDirect(): Promise<AdapterResult> {
   return noPublicEndpoint(
     "GHTK",
-    "hiện chỉ cho tra cứu đơn hàng trong ứng dụng iGHTK và trang khách hàng sau khi đăng nhập, chưa mở trang tra cứu công khai cho khách chưa đăng nhập nên web chưa lấy được dữ liệu tự động.",
+    "có trang tra cứu công khai i.ghtk.vn, nhưng mỗi lần tra cần mã xác minh reCAPTCHA tạo trong trình duyệt nên máy chủ chưa lấy được dữ liệu tự động. Bấm link bên dưới là mở thẳng trang tra cứu với mã này đã điền sẵn, chỉ cần xác minh rồi xem hành trình.",
   );
 }
 
@@ -973,7 +1000,7 @@ const CARRIERS: CarrierDef[] = [
   {
     id: "ghtk",
     name: "GHTK — Giao Hàng Tiết Kiệm",
-    url: "https://giaohangtietkiem.vn/tra-cuu-van-don",
+    url: (n) => `https://i.ghtk.vn/${encodeURIComponent(n)}`,
     detect: (n) =>
       /^[A-Z0-9]+(\.[A-Z0-9]+){2,}$/i.test(n) || /^S\d{9,12}[A-Z]?$/.test(n),
     fetchTracking: fetchGhtkDirect,
@@ -1044,7 +1071,11 @@ const CARRIERS: CarrierDef[] = [
 ];
 
 const GHTK_CARRIER_NAME = "GHTK — Giao Hàng Tiết Kiệm";
-const GHTK_TRACK_URL = "https://giaohangtietkiem.vn/tra-cuu-van-don";
+/** One-tap public tracking link: i.ghtk.vn/<code> opens the tracking page
+ * with the code already filled in (verified 2026-11-13). */
+function ghtkTrackUrl(number: string): string {
+  return `https://i.ghtk.vn/${encodeURIComponent(number)}`;
+}
 
 function carrierById(id: string): CarrierDef | null {
   return CARRIERS.find((c) => c.id === id) ?? null;
@@ -1188,7 +1219,7 @@ async function lookupDirect(
       state: "phone_required",
       message: phoneRequired.reason,
       carrierName: phoneRequired.carrier.name,
-      carrierUrl: phoneRequired.carrier.url,
+      carrierUrl: resolveCarrierUrl(phoneRequired.carrier, number),
     };
   }
 
@@ -1205,7 +1236,7 @@ async function lookupDirect(
                 ", ",
               )} đang chặn lấy dữ liệu tự động (kiểm tra bot/captcha) hoặc vừa đổi cấu trúc trang nên tạm thời chưa tra được mã này. Thử tra trực tiếp trên trang của hãng.`,
       carrierName: firstBlocked.carrier.name,
-      carrierUrl: firstBlocked.carrier.url,
+      carrierUrl: resolveCarrierUrl(firstBlocked.carrier, number),
     };
   }
 
@@ -1556,9 +1587,9 @@ async function lookupGhtkApi(
     return {
       state: "not_configured",
       message:
-        "Mã này thuộc GHTK — Giao Hàng Tiết Kiệm. GHTK không có trong danh mục của 17TRACK và cũng không còn trang tra cứu công khai, nên muốn tra tự động phải dùng API chính thức của GHTK bằng token của một tài khoản shop GHTK. Hiện máy chủ chưa cấu hình token này (biến GHTK_API_TOKEN, kèm mã shop GHTK_CLIENT_SOURCE) nên chưa tra được mã GHTK tại đây. Bạn tra tạm mã này trên trang của GHTK nhé.",
+        "Mã này thuộc GHTK — Giao Hàng Tiết Kiệm. GHTK không có trong danh mục của 17TRACK, nên muốn tra tự động phải dùng API chính thức của GHTK bằng token của một tài khoản shop GHTK. Hiện máy chủ chưa cấu hình token này (biến GHTK_API_TOKEN, kèm mã shop GHTK_CLIENT_SOURCE) nên chưa tra được mã GHTK tại đây. Bấm link bên dưới là mở thẳng trang tra cứu i.ghtk.vn với mã này đã điền sẵn, chỉ cần xác minh rồi xem hành trình.",
       carrierName: GHTK_CARRIER_NAME,
-      carrierUrl: GHTK_TRACK_URL,
+      carrierUrl: ghtkTrackUrl(number),
     };
   }
 
@@ -1578,7 +1609,7 @@ async function lookupGhtkApi(
       message:
         "Không kết nối được tới máy chủ API của GHTK lúc này. Thử lại sau ít phút.",
       carrierName: GHTK_CARRIER_NAME,
-      carrierUrl: GHTK_TRACK_URL,
+      carrierUrl: ghtkTrackUrl(number),
     };
   }
   if (res.status === 401 || res.status === 403) {
@@ -1587,7 +1618,7 @@ async function lookupGhtkApi(
       message:
         "GHTK từ chối token API trên máy chủ (token sai, hết hạn hoặc thiếu quyền 'Trạng thái đơn hàng'). Người quản trị cần kiểm tra lại biến GHTK_API_TOKEN và GHTK_CLIENT_SOURCE trong cấu hình máy chủ.",
       carrierName: GHTK_CARRIER_NAME,
-      carrierUrl: GHTK_TRACK_URL,
+      carrierUrl: ghtkTrackUrl(number),
     };
   }
 
@@ -1605,7 +1636,7 @@ async function lookupGhtkApi(
       message:
         "API GHTK không tìm thấy đơn này. Lưu ý: API GHTK chỉ tra được các đơn thuộc đúng tài khoản shop đã cấp token (theo mã vận đơn GHTK hoặc mã đơn của shop đó) — đơn của shop khác sẽ không tra được bằng token này. Kiểm tra lại mã, hoặc tra trên trang/ứng dụng của GHTK.",
       carrierName: GHTK_CARRIER_NAME,
-      carrierUrl: GHTK_TRACK_URL,
+      carrierUrl: ghtkTrackUrl(number),
     };
   }
 
